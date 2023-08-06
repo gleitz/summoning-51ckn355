@@ -9,17 +9,28 @@
 
 import argparse
 import json
+import random
 import time
 from urllib.parse import quote
 
+from dotenv import dotenv_values
 import requests
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 from slugify import slugify
+
+env_vars = dotenv_values('.env')
 
 CARD_INFO_GENERATION_URL = 'https://backend-dot-valued-sight-253418.ew.r.appspot.com/api/v1/card'
 CARD_ART_GENERATION_URL = 'https://backend-dot-valued-sight-253418.ew.r.appspot.com/api/v1/art'
-CARD_DISPLAY_URL = 'https://adventuresofyou.online/urza'
+CARD_ART_GENERATION_URL_WOMBO = "https://api.luan.tools/api/tasks/"
+CARD_DISPLAY_URL = 'https://magic.glei.tz/urza'
+WOMBO_API_KEY = env_vars['WOMBO_API_KEY']
+WOMBO_HEADERS = {
+    'Authorization': f'bearer {WOMBO_API_KEY}',
+    'Content-Type': 'application/json'
+}
 
 # pylint: disable=anomalous-backslash-in-string
 DOWNLOAD_BOOKMARKLET = '''(function() {
@@ -66,10 +77,11 @@ def command_line_runner():
 
 def main(name, mana_cost):
     card = _generate_card(name, mana_cost)
-    card_art_url = _generate_card_art_url(card)
+    card_art_url = _generate_card_art_url_wombo(card)
     card_name = card['name']
 
-    card['url'] = f'https://corsproxy.io/?{quote(card_art_url)}'
+    # card['url'] = f'https://corsproxy.io/?{quote(card_art_url)}'
+    card['url'] = card_art_url
     card['filename'] = f'{slugify(card_name)}_{int(time.time())}.png'
 
     print("Finished card:")
@@ -78,12 +90,11 @@ def main(name, mana_cost):
 
 
 def _download_card(card):
-    driver = _get_driver()
-
     url = f'{CARD_DISPLAY_URL}?encoded=1&card={quote(json.dumps(card))}'
     print("Printing card...")
     print(url)
 
+    driver = _get_driver()
     driver.get(url)
     time.sleep(5)
     driver.execute_script(DOWNLOAD_BOOKMARKLET % card['filename'])
@@ -124,7 +135,7 @@ def _generate_card_art_url(card):
     response = requests.request("GET",
                                 CARD_ART_GENERATION_URL,
                                 params={"card": json.dumps(card)})
-
+    print(response.url)
     wombo_task_id = response.json()['wombo_task_id']
     time.sleep(10)
 
@@ -141,11 +152,57 @@ def _generate_card_art_url(card):
     return response.json()['art_url']
 
 
+# https://wombo.gitbook.io/dream-docs/quick-start
+def _generate_card_art_url_wombo(card):
+    print("Fetching artwork")
+    post_payload = json.dumps({
+        "use_target_image": False
+    })
+    post_response = requests.request(
+        "POST", CARD_ART_GENERATION_URL_WOMBO,
+        headers=WOMBO_HEADERS, data=post_payload)
+
+    task_id = post_response.json()['id']
+    prompt = f'Generate an image for a Magic: the Gathering card with the following specification: {json.dumps(card)}'
+    print(prompt)
+    task_id_url = f"https://api.luan.tools/api/tasks/{task_id}"
+    put_payload = json.dumps({
+        "input_spec": {
+            "style": random.randint(1, 21),
+            "prompt": prompt,
+            "target_image_weight": 0.1,
+            "width": 1024,
+            "height": 748
+        }})
+    requests.request("PUT", task_id_url, headers=WOMBO_HEADERS, data=put_payload)
+
+    while True:
+        response_json = requests.request(
+            "GET", task_id_url, headers=WOMBO_HEADERS).json()
+
+        state = response_json["state"]
+
+        if state == "completed":
+            r = requests.request("GET", response_json["result"])
+            with open("image.jpg", "wb") as image_file:
+                image_file.write(r.content)
+            print("image saved successfully :)")
+            break
+
+        if state == "failed":
+            print("generation failed :(")
+            break
+        time.sleep(3)
+
+    return "image.jpg"
+
+
 def _get_driver():
     options = Options()
     options.headless = True
 
-    driver = webdriver.Chrome(executable_path='./chromedriver', options=options)
+    service = Service(executable_path='./chromedriver')
+    driver = webdriver.Chrome(options=options, service=service)
     return driver
 
 
